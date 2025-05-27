@@ -1,0 +1,29 @@
+[project]
+name = "funbite"
+version = "0.1.0"
+description = "Morsel function execution to be resumable"
+readme = "README.md"
+authors = [
+    { name = "Olivier Breuleux", email = "breuleux@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "ovld>=0.5.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-cov>=6.1.1",
+]
+
+[tool.ruff]
+line-length = 95
+
+[tool.ruff.lint]
+extend-select = ["I"]
+ignore = ["E241", "F722", "E501", "E203", "F811", "F821"]
