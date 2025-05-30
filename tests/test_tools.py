@@ -119,27 +119,50 @@ def test_varanal_global():
     )
 
 
-def _split(node):
-    match node:
-        case ast.Name("__SPLIT__"):
-            return True
-    return False
+class SplittingStrategy:
+    def __init__(self, globals):
+        self.globals = globals
+
+    def is_split(self, node, context):
+        match node:
+            case ast.Call(func=ast.Name(x)):
+                if self.globals.get(x, None) is checkpoint:
+                    return True
+        return False
+
+    def transform(self, node: ast.Call, cont, context):
+        return ast.Call(
+            func=node.func,
+            args=node.args,
+            keywords=[*node.keywords, ast.keyword("continuation", cont)],
+        )
+
+    def default(self, cont, context):
+        return ast.Call(
+            func=cont,
+            args=[ast.Constant(None)],
+        )
+
+    def wrap(self, entry):
+        return entry
 
 
-__SPLIT__ = 10
+def checkpoint(x=None, continuation=None):
+    assert continuation is not None
+    return continuation(x)
 
 
 def test_splitter():
-    @split(_split)
+    @split(SplittingStrategy)
     def f(x, y):
         print("hello", y * y)
 
-        __SPLIT__
+        checkpoint(x)
 
         print("middle")
         z = x * x
 
-        __SPLIT__
+        checkpoint(y)
 
         print("bye", x * z)
         return z
@@ -149,38 +172,41 @@ def test_splitter():
 
 
 def test_splitter_in_expr():
-    @split(_split)
-    def f(x, y):
-        print("hello", y * y)
+    @split(SplittingStrategy)
+    def f(x):
+        w = 1 + checkpoint(x) + 2
+        z = w * w
+        return z
 
-        w = 1 + __SPLIT__ + 2
+    result = f(4)
+    assert result == 49
 
-        print("middle")
+
+def test_splitter_in_expr_2():
+    @split(SplittingStrategy)
+    def f(x):
         z = x * x
+        w = 1 + checkpoint(z) + 2
+        return w
 
-        __SPLIT__
-
-        print("bye", x * z)
-        return w + z
-
-    result = f(5, 3)
-    assert result == 38
+    result = f(4)
+    assert result == 19
 
 
 def test_splitter_in_if():
-    @split(_split)
+    @split(SplittingStrategy)
     def f(x, y):
         print("hello", y * y)
 
         if x:
             x = 0
-            __SPLIT__
+            checkpoint()
             print("inif")
 
         print("middle")
         z = x * x
 
-        __SPLIT__
+        checkpoint()
 
         print("bye", x * z)
         return x * z
@@ -190,12 +216,12 @@ def test_splitter_in_if():
 
 
 def test_splitter_in_while():
-    @split(_split)
+    @split(SplittingStrategy)
     def f(xs):
         val = 0
 
         while xs:
-            __SPLIT__
+            checkpoint()
             val = val + xs.pop()
 
         return val
@@ -205,12 +231,12 @@ def test_splitter_in_while():
 
 
 def test_splitter_in_for():
-    @split(_split)
+    @split(SplittingStrategy)
     def f(xs):
         val = 0
 
         for x in xs:
-            __SPLIT__
+            checkpoint()
             val = val + x
 
         return val

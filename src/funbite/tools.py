@@ -9,7 +9,7 @@ from typing import Callable
 
 from ovld import call_next, ovld, recurse
 
-from .runtime import Bite, FunBites
+from .runtime import Bite
 from .visit import NodeTransformer, NodeVisitor
 
 
@@ -127,10 +127,11 @@ class VariableAnalysis(NodeVisitor):
         for _, x in results:
             if isinstance(x, Variables):
                 return x
+        return Variables()
 
 
 class SplitTagger(NodeVisitor):
-    split_condition: Callable[[ast.AST], bool]
+    strategy: Callable[[ast.AST], bool]
 
     def reduce(self, node, results, context):
         for _, x in results:
@@ -143,7 +144,7 @@ class SplitTagger(NodeVisitor):
 
     @ovld(priority=1)
     def __call__(self, node: ast.AST, context: object):
-        if self.split_condition(node):
+        if self.strategy.is_split(node, context):
             result = "match"
         else:
             result = call_next(node, context)
@@ -170,7 +171,7 @@ class Collapse(NodeVisitor):
         if isinstance(node, ast.stmt):
             rval = None
             add = node
-            SplitTagger.run(add, split_condition=context.split_condition)
+            SplitTagger.run(add, strategy=context.strategy)
         else:
             newsym = context.gensym()
             rval = ast.Name(id=newsym, ctx=ast.Load())
@@ -201,7 +202,7 @@ class Collapse(NodeVisitor):
             new_stmts, x = self(x, context)
             rval.append(x)
             stmts.extend(new_stmts)
-        return new_stmts, rval
+        return stmts, rval
 
     def __call__(self, node: ast.Name, context):
         return [], node
@@ -222,7 +223,7 @@ class SplitState:
     continuation: ast.AST = None
     definitions: dict = field(default_factory=dict)
     variables: Variables = field(default_factory=Variables)
-    split_condition: Callable = None
+    strategy: Callable = None
 
     def gensym(self):
         return f"__{next(self.count)}"
@@ -230,8 +231,9 @@ class SplitState:
     replace = dataclasses.replace
 
 
-def _encapsulate(args, body, context):
-    cont_name = f"F{context.gensym()}"
+def _encapsulate(args, body, context, cont_name=None):
+    if cont_name is None:
+        cont_name = f"F{context.gensym()}"
     context.definitions[cont_name] = ast.FunctionDef(
         name=cont_name,
         args=args
@@ -257,8 +259,10 @@ class BodySplitter:
 
     def create_continuation(self, current, context):
         q = [*self.prebody, *self.queue]
-        if current:
-            q.append(current)
+        if isinstance(current, ast.Assign):
+            name = current.targets[0].id
+        else:
+            name = context.gensym()
         upper_vars = VariableAnalysis.run(
             q, context=Variables(arg_defs=context.variables.arg_defs)
         )
@@ -267,14 +271,19 @@ class BodySplitter:
             self.acc, context=upper_vars.clone().replace(uses_local=set())
         )
         new_defs = acc_vars.local_defs - upper_vars.local_defs
-        to_pass = acc_vars.uses_local - new_defs
-        cont_name = _encapsulate(to_pass, self.acc, context)
+        to_pass = list(acc_vars.uses_local - new_defs)
         args = [ast.Name(id=var, ctx=ast.Load()) for var in to_pass]
-        return ast.Call(
+        to_pass.append(name)
+        cont_name = _encapsulate(to_pass, self.acc, context)
+        cont_struct = ast.Call(
             func=ast.Name(id="__Bite", ctx=ast.Load()),
             args=[ast.Name(id=cont_name, ctx=ast.Load()), *args],
             keywords=[],
         )
+        if current is not None:
+            return context.strategy.transform(current.value, cont_struct, context)
+        else:
+            return context.strategy.default(cont_struct, context)
 
     @ovld
     def process(self, node: ast.If, context: SplitState):
@@ -344,7 +353,7 @@ class BodySplitter:
             collapsed = getattr(x, "collapsed", False)
 
             if split_tag == "inner" and collapsed:
-                cont = self.create_continuation(x, context)
+                cont = self.create_continuation(None, context)
                 ret = ast.Return(value=cont)
                 ctx = context.replace(continuation=ret)
                 self.process(x, ctx)
@@ -356,7 +365,7 @@ class BodySplitter:
 
             elif split_tag == "match":
                 cont = self.create_continuation(x, context)
-                self.acc = [ast.Return(value=cont), x]
+                self.acc = [ast.Return(value=cont)]
 
             else:
                 self.acc.append(x)
@@ -373,53 +382,32 @@ class Splitter(NodeTransformer):
     def __call__(self, node: ast.FunctionDef, context: SplitState):
         context = SplitState(
             variables=VariableAnalysis().inner(node, Variables()),
-            split_condition=context.split_condition,
+            strategy=context.strategy,
         )
         new_body = split_body(node.body, context)
         defns = context.definitions.values()
         if defns:
-            start = _encapsulate(node.args, new_body, context)
-            ass = ast.Assign(
-                targets=[ast.Name(id=node.name, ctx=ast.Store())],
-                value=ast.Call(
-                    func=ast.Name(id="__FunBites", ctx=ast.Load()),
-                    args=[],
-                    keywords=[
-                        ast.keyword(arg="start", value=ast.Constant(value=start)),
-                        ast.keyword(
-                            arg="definitions",
-                            value=ast.Dict(
-                                keys=[
-                                    ast.Constant(value=k) for k in context.definitions.keys()
-                                ],
-                                values=[
-                                    ast.Name(id=k, ctx=ast.Load())
-                                    for k in context.definitions.keys()
-                                ],
-                            ),
-                        ),
-                    ],
-                ),
-            )
-            return [*defns, ass]
+            _encapsulate(node.args, new_body, context, cont_name=node.name)
+            return [*reversed(defns)]
 
         else:
             return node
 
 
-def split(split_condition):
+def split(strategy_class):
     def deco(fn):
         tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
         fdef = tree.body[0]
-        SplitTagger.run(fdef, split_condition=split_condition)
-        fdef = Splitter.run(fdef, context=SplitState(split_condition=split_condition))
+        strategy = strategy_class(fn.__globals__)
+        SplitTagger.run(fdef, strategy=strategy)
+        fdef = Splitter.run(fdef, context=SplitState(strategy=strategy))
         if isinstance(fdef, list):
             tree.body[:] = fdef
         else:
             tree.body[0] = fdef
         tree = ast.fix_missing_locations(tree)
-        fn.__globals__.update({"__Bite": Bite, "__FunBites": FunBites})
+        fn.__globals__.update({"__Bite": Bite})
         exec(compile(tree, "<string>", "exec"), fn.__globals__)
-        return fn.__globals__[fn.__name__]
+        return strategy.wrap(fn.__globals__[fn.__name__])
 
     return deco
