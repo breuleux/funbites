@@ -1,10 +1,16 @@
 import ast
 import dataclasses
+import inspect
+import textwrap
+from collections import deque
 from dataclasses import dataclass, field
+from itertools import count
+from typing import Callable
 
-from ovld import recurse
+from ovld import call_next, ovld, recurse
 
-from .visit import NodeVisitor
+from .runtime import Bite, FunBites
+from .visit import NodeTransformer, NodeVisitor
 
 
 @dataclass
@@ -121,3 +127,299 @@ class VariableAnalysis(NodeVisitor):
         for _, x in results:
             if isinstance(x, Variables):
                 return x
+
+
+class SplitTagger(NodeVisitor):
+    split_condition: Callable[[ast.AST], bool]
+
+    def reduce(self, node, results, context):
+        for _, x in results:
+            match x:
+                case "match":
+                    return "inner"
+                case "inner":
+                    return "inner"
+        return "normal"
+
+    @ovld(priority=1)
+    def __call__(self, node: ast.AST, context: object):
+        if self.split_condition(node):
+            result = "match"
+        else:
+            result = call_next(node, context)
+        node.split_tag = result
+        return result
+
+    def __call__(self, node: ast.Expr, context: object):
+        return recurse(node.value, context)
+
+    def __call__(self, node: object, context: object):
+        return "normal"
+
+
+class Collapse(NodeVisitor):
+    def collapse(self, node, hoist, context):
+        stmts = []
+        for fld in hoist:
+            value = getattr(node, fld)
+            new_stmts, new_value = self(value, context)
+            assert value is None or new_value is not None
+            stmts.extend(new_stmts)
+            setattr(node, fld, new_value)
+
+        if isinstance(node, ast.stmt):
+            rval = None
+            add = node
+            SplitTagger.run(add, split_condition=context.split_condition)
+        else:
+            newsym = context.gensym()
+            rval = ast.Name(id=newsym, ctx=ast.Load())
+            add = ast.Assign(
+                targets=[ast.Name(id=newsym, ctx=ast.Store())],
+                value=node,
+            )
+            if getattr(node, "split_tag", None) == "match":
+                add.split_tag = "match"
+
+        add.collapsed = True
+        stmts.append(add)
+        return stmts, rval
+
+    def __call__(self, node: ast.AST, context):
+        usually_keep = {"body", "orelse", "cases"}
+        all_fields = [f for f, _ in ast.iter_fields(node)]
+        hoist = [f for f in all_fields if f not in usually_keep]
+        return self.collapse(node, hoist, context)
+
+    def __call__(self, node: ast.While, context):
+        return self.collapse(node, hoist=[], context=context)
+
+    def __call__(self, node: list, context):
+        stmts = []
+        rval = []
+        for x in node:
+            new_stmts, x = self(x, context)
+            rval.append(x)
+            stmts.extend(new_stmts)
+        return new_stmts, rval
+
+    def __call__(self, node: ast.Name, context):
+        return [], node
+
+    def __call__(self, node: ast.Constant, context):
+        return [], node
+
+    def __call__(self, node: ast.operator, context):
+        return [], node
+
+    def __call__(self, node: object, context):
+        return [], node
+
+
+@dataclass
+class SplitState:
+    count: object = field(default_factory=count)
+    continuation: ast.AST = None
+    definitions: dict = field(default_factory=dict)
+    variables: Variables = field(default_factory=Variables)
+    split_condition: Callable = None
+
+    def gensym(self):
+        return f"__{next(self.count)}"
+
+    replace = dataclasses.replace
+
+
+def _encapsulate(args, body, context):
+    cont_name = f"F{context.gensym()}"
+    context.definitions[cont_name] = ast.FunctionDef(
+        name=cont_name,
+        args=args
+        if isinstance(args, ast.arguments)
+        else ast.arguments(
+            posonlyargs=[],
+            args=[ast.arg(arg=var, annotation=None) for var in args],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
+        ),
+        body=body,
+        decorator_list=[],
+    )
+    return cont_name
+
+
+@dataclass
+class BodySplitter:
+    queue: deque = field(default_factory=deque)
+    acc: list = field(default_factory=list)
+    prebody: list = field(default_factory=list)
+
+    def create_continuation(self, current, context):
+        q = [*self.prebody, *self.queue]
+        if current:
+            q.append(current)
+        upper_vars = VariableAnalysis.run(
+            q, context=Variables(arg_defs=context.variables.arg_defs)
+        )
+        self.acc.reverse()
+        acc_vars = VariableAnalysis.run(
+            self.acc, context=upper_vars.clone().replace(uses_local=set())
+        )
+        new_defs = acc_vars.local_defs - upper_vars.local_defs
+        to_pass = acc_vars.uses_local - new_defs
+        cont_name = _encapsulate(to_pass, self.acc, context)
+        args = [ast.Name(id=var, ctx=ast.Load()) for var in to_pass]
+        return ast.Call(
+            func=ast.Name(id="__Bite", ctx=ast.Load()),
+            args=[ast.Name(id=cont_name, ctx=ast.Load()), *args],
+            keywords=[],
+        )
+
+    @ovld
+    def process(self, node: ast.If, context: SplitState):
+        node.body = split_body(node.body, context, prebody=self.queue)
+        node.orelse = split_body(node.orelse, context)
+        self.acc = [node]
+
+    @ovld
+    def process(self, node: ast.While, context: SplitState):
+        stmt = ast.If(test=node.test, body=node.body, orelse=[context.continuation])
+        self.acc = [stmt]
+        wcont = self.create_continuation(None, context)
+        wret = ast.Return(value=wcont)
+        stmt.body = split_body(
+            node.body, context.replace(continuation=wret), prebody=self.queue
+        )
+        self.acc = [wret]
+
+    @ovld
+    def process(self, node: ast.For, context: SplitState):
+        make_iter = ast.Assign(
+            targets=[ast.Name(id=node.target.id + "_iter", ctx=ast.Store())],
+            value=ast.Call(
+                func=ast.Name(id="iter", ctx=ast.Load()),
+                args=[node.iter],
+                keywords=[],
+            ),
+        )
+        nextvar = context.gensym()
+        getnext = ast.NamedExpr(
+            target=ast.Name(id=nextvar, ctx=ast.Store()),
+            value=ast.Call(
+                func=ast.Name(id="next", ctx=ast.Load()),
+                args=[
+                    ast.Name(id=node.target.id + "_iter", ctx=ast.Load()),
+                    ast.Name(id="StopIteration", ctx=ast.Load()),
+                ],
+                keywords=[],
+            ),
+        )
+        extractor = ast.Assign(
+            targets=[node.target],
+            value=ast.Name(id=nextvar, ctx=ast.Load()),
+        )
+        loop = ast.While(
+            test=ast.Compare(
+                left=getnext,
+                ops=[ast.IsNot()],
+                comparators=[ast.Name(id="StopIteration", ctx=ast.Load())],
+            ),
+            body=[
+                extractor,
+                *node.body,
+            ],
+        )
+        self.queue.append(make_iter)
+        self.process(loop, context)
+
+    def split(self, body, context):
+        if context.continuation:
+            body = [*body, context.continuation]
+
+        self.queue = deque(body)
+        while self.queue:
+            x = self.queue.pop()
+            split_tag = getattr(x, "split_tag", "normal")
+            collapsed = getattr(x, "collapsed", False)
+
+            if split_tag == "inner" and collapsed:
+                cont = self.create_continuation(x, context)
+                ret = ast.Return(value=cont)
+                ctx = context.replace(continuation=ret)
+                self.process(x, ctx)
+
+            elif split_tag == "inner":
+                stmts, expr = Collapse.run(x, context=context)
+                assert expr is None
+                self.queue.extend(stmts)
+
+            elif split_tag == "match":
+                cont = self.create_continuation(x, context)
+                self.acc = [ast.Return(value=cont), x]
+
+            else:
+                self.acc.append(x)
+
+        self.acc.reverse()
+        return self.acc
+
+
+def split_body(body, context, prebody=[]):
+    return BodySplitter(prebody=prebody).split(body, context)
+
+
+class Splitter(NodeTransformer):
+    def __call__(self, node: ast.FunctionDef, context: SplitState):
+        context = SplitState(
+            variables=VariableAnalysis().inner(node, Variables()),
+            split_condition=context.split_condition,
+        )
+        new_body = split_body(node.body, context)
+        defns = context.definitions.values()
+        if defns:
+            start = _encapsulate(node.args, new_body, context)
+            ass = ast.Assign(
+                targets=[ast.Name(id=node.name, ctx=ast.Store())],
+                value=ast.Call(
+                    func=ast.Name(id="__FunBites", ctx=ast.Load()),
+                    args=[],
+                    keywords=[
+                        ast.keyword(arg="start", value=ast.Constant(value=start)),
+                        ast.keyword(
+                            arg="definitions",
+                            value=ast.Dict(
+                                keys=[
+                                    ast.Constant(value=k) for k in context.definitions.keys()
+                                ],
+                                values=[
+                                    ast.Name(id=k, ctx=ast.Load())
+                                    for k in context.definitions.keys()
+                                ],
+                            ),
+                        ),
+                    ],
+                ),
+            )
+            return [*defns, ass]
+
+        else:
+            return node
+
+
+def split(split_condition):
+    def deco(fn):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        fdef = tree.body[0]
+        SplitTagger.run(fdef, split_condition=split_condition)
+        fdef = Splitter.run(fdef, context=SplitState(split_condition=split_condition))
+        if isinstance(fdef, list):
+            tree.body[:] = fdef
+        else:
+            tree.body[0] = fdef
+        tree = ast.fix_missing_locations(tree)
+        fn.__globals__.update({"__Bite": Bite, "__FunBites": FunBites})
+        exec(compile(tree, "<string>", "exec"), fn.__globals__)
+        return fn.__globals__[fn.__name__]
+
+    return deco

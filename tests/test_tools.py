@@ -117,3 +117,103 @@ def test_varanal_global():
         globals={"x"},
         uses_free={"x"},
     )
+
+
+def _split(node):
+    match node:
+        case ast.Name("__SPLIT__"):
+            return True
+    return False
+
+
+__SPLIT__ = 10
+
+
+def test_splitter():
+    @split(_split)
+    def f(x, y):
+        print("hello", y * y)
+
+        __SPLIT__
+
+        print("middle")
+        z = x * x
+
+        __SPLIT__
+
+        print("bye", x * z)
+        return z
+
+    result = f(5, 3)
+    assert result == 25
+
+
+def test_splitter_in_expr():
+    @split(_split)
+    def f(x, y):
+        print("hello", y * y)
+
+        w = 1 + __SPLIT__ + 2
+
+        print("middle")
+        z = x * x
+
+        __SPLIT__
+
+        print("bye", x * z)
+        return w + z
+
+    result = f(5, 3)
+    assert result == 38
+
+
+def test_splitter_in_if():
+    @split(_split)
+    def f(x, y):
+        print("hello", y * y)
+
+        if x:
+            x = 0
+            __SPLIT__
+            print("inif")
+
+        print("middle")
+        z = x * x
+
+        __SPLIT__
+
+        print("bye", x * z)
+        return x * z
+
+    result = f(5, 3)
+    assert result == 0
+
+
+def test_splitter_in_while():
+    @split(_split)
+    def f(xs):
+        val = 0
+
+        while xs:
+            __SPLIT__
+            val = val + xs.pop()
+
+        return val
+
+    result = f([1, 2, 3, 4])
+    assert result == 10
+
+
+def test_splitter_in_for():
+    @split(_split)
+    def f(xs):
+        val = 0
+
+        for x in xs:
+            __SPLIT__
+            val = val + x
+
+        return val
+
+    result = f([1, 2, 3, 4])
+    assert result == 10
