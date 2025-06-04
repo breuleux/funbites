@@ -118,7 +118,4 @@ class VariableAnalysis(NodeVisitor):
         return context
 
     def reduce(self, node, results, context):
-        for _, x in results:
-            if isinstance(x, Variables):
-                return x
-        return Variables()
+        return context

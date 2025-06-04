@@ -1,65 +1,41 @@
-import ast
+from dataclasses import dataclass
 
-from funbite.split import split
+from funbite.interface import checkpointable
+from funbite.strategy import MainStrategy, continuator
 
-
-class SplittingStrategy:
-    def __init__(self, globals):
-        self.globals = globals
-
-    def is_split(self, node, context):
-        match node:
-            case ast.Call(func=ast.Name(x)):
-                if self.globals.get(x, None) is checkpoint:
-                    return True
-        return False
-
-    def transform(self, node: ast.Call, cont, context):
-        return ast.Call(
-            func=node.func,
-            args=node.args,
-            keywords=[*node.keywords, ast.keyword("continuation", cont)],
-        )
-
-    def default(self, cont, context):
-        return ast.Call(
-            func=cont,
-            args=[ast.Constant(None)],
-        )
-
-    def wrap(self, entry):
-        return entry
-
-    def identify(self, above, body, name, context):
-        return context.gensym()
+strategy = MainStrategy()
 
 
+@dataclass
+class ImmediateReturn:
+    value: object
+
+
+@continuator
 def checkpoint(x=None, continuation=None):
     assert continuation is not None
-    return continuation(x)
+    if isinstance(x, ImmediateReturn):
+        return x.value
+    else:
+        return continuation(x)
 
 
-def test_splitter():
-    @split(SplittingStrategy)
+def test_split():
+    @checkpointable
     def f(x, y):
-        print("hello", y * y)
+        checkpoint()
+        a = x * x
+        checkpoint(a)
+        b = y * y
+        checkpoint(b)
+        return a + b
 
-        checkpoint(x)
-
-        print("middle")
-        z = x * x
-
-        checkpoint(y)
-
-        print("bye", x * z)
-        return z
-
-    result = f(5, 3)
+    result = f(3, 4)
     assert result == 25
 
 
-def test_splitter_in_expr():
-    @split(SplittingStrategy)
+def test_split_in_expr():
+    @checkpointable
     def f(x):
         w = 1 + checkpoint(x) + 2
         z = w * w
@@ -67,10 +43,11 @@ def test_splitter_in_expr():
 
     result = f(4)
     assert result == 49
+    assert f(ImmediateReturn(666)) == 666
 
 
 def test_splitter_in_expr_2():
-    @split(SplittingStrategy)
+    @checkpointable
     def f(x):
         z = x * x
         w = 1 + checkpoint(z) + 2
@@ -81,29 +58,18 @@ def test_splitter_in_expr_2():
 
 
 def test_splitter_in_if():
-    @split(SplittingStrategy)
-    def f(x, y):
-        print("hello", y * y)
+    @checkpointable
+    def f(x):
+        if x < 0:
+            checkpoint(ImmediateReturn(False))
+        return True
 
-        if x:
-            x = 0
-            checkpoint()
-            print("inif")
-
-        print("middle")
-        z = x * x
-
-        checkpoint()
-
-        print("bye", x * z)
-        return x * z
-
-    result = f(5, 3)
-    assert result == 0
+    assert f(12) is True
+    assert f(-12) is False
 
 
 def test_splitter_in_while():
-    @split(SplittingStrategy)
+    @checkpointable
     def f(xs):
         val = 0
 
@@ -113,20 +79,19 @@ def test_splitter_in_while():
 
         return val
 
-    result = f([1, 2, 3, 4])
-    assert result == 10
+    assert f([1, 2, 3, 4]) == 10
 
 
 def test_splitter_in_for():
-    @split(SplittingStrategy)
+    @checkpointable
     def f(xs):
         val = 0
 
         for x in xs:
-            checkpoint()
+            checkpoint(x)
             val = val + x
 
         return val
 
-    result = f([1, 2, 3, 4])
-    assert result == 10
+    assert f([1, 2, 3, 4]) == 10
+    assert f([1, 2, ImmediateReturn("boom!"), 4]) == "boom!"

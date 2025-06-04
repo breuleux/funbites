@@ -1,7 +1,5 @@
 import ast
 import dataclasses
-import inspect
-import textwrap
 from collections import deque
 from dataclasses import dataclass, field
 from itertools import count
@@ -9,14 +7,11 @@ from typing import Callable
 
 from ovld import call_next, ovld, recurse
 
-from .runtime import FunBite
 from .vars import VariableAnalysis, Variables
 from .visit import NodeTransformer, NodeVisitor
 
 
 class SplitTagger(NodeVisitor):
-    strategy: Callable[[ast.AST], bool]
-
     def reduce(self, node, results, context):
         for _, x in results:
             match x:
@@ -28,7 +23,7 @@ class SplitTagger(NodeVisitor):
 
     @ovld(priority=1)
     def __call__(self, node: ast.AST, context: object):
-        if self.strategy.is_split(node, context):
+        if context.strategy.is_split(node, context):
             result = "match"
         else:
             result = call_next(node, context)
@@ -55,7 +50,7 @@ class Collapse(NodeVisitor):
         if isinstance(node, ast.stmt):
             rval = None
             add = node
-            SplitTagger.run(add, strategy=context.strategy)
+            SplitTagger.run(add, context=context)
         else:
             newsym = context.gensym()
             rval = ast.Name(id=newsym, ctx=ast.Load())
@@ -79,6 +74,9 @@ class Collapse(NodeVisitor):
     def __call__(self, node: ast.While, context):
         return self.collapse(node, hoist=[], context=context)
 
+    def __call__(self, node: ast.Compare, context):
+        return self.collapse(node, hoist={"comparators"}, context=context)
+
     def __call__(self, node: list, context):
         stmts = []
         rval = []
@@ -101,7 +99,7 @@ class Collapse(NodeVisitor):
         return [], node
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SplitState:
     name: str = "_func"
     count: object = field(default_factory=count)
@@ -109,6 +107,8 @@ class SplitState:
     definitions: dict = field(default_factory=dict)
     variables: Variables = field(default_factory=Variables)
     strategy: Callable = None
+    locals: dict = None
+    globals: dict = None
 
     def gensym(self):
         return f"__{next(self.count)}"
@@ -160,7 +160,7 @@ class BodySplitter:
         args = [ast.Name(id=var, ctx=ast.Load()) for var in to_pass]
         to_pass.append(name)
 
-        cont_name = context.strategy.identify(q, self.acc, name, context)
+        cont_name = context.strategy.identify(name, q, self.acc, context)
         cont_name = _encapsulate(to_pass, self.acc, context, cont_name=cont_name)
 
         cont_struct = ast.Call(
@@ -272,6 +272,8 @@ class Splitter(NodeTransformer):
             name=context.name,
             variables=VariableAnalysis().inner(node, Variables()),
             strategy=context.strategy,
+            globals=context.globals,
+            locals=context.locals,
         )
         new_body = split_body(node.body, context)
         defns = context.definitions.values()
@@ -280,24 +282,4 @@ class Splitter(NodeTransformer):
             return [*reversed(defns)]
 
         else:
-            return node
-
-
-def split(strategy_class):
-    def deco(fn):
-        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-        fdef = tree.body[0]
-        strategy = strategy_class(fn.__globals__)
-        SplitTagger.run(fdef, strategy=strategy)
-        fdef = Splitter.run(fdef, context=SplitState(strategy=strategy, name=fn.__name__))
-        if isinstance(fdef, list):
-            tree.body[:] = fdef
-        else:
-            tree.body[0] = fdef
-        tree = ast.fix_missing_locations(tree)
-        tree = ast.increment_lineno(tree, fn.__code__.co_firstlineno - 1)
-        fn.__globals__.update({"__FunBite": FunBite})
-        exec(compile(tree, fn.__code__.co_filename, "exec"), fn.__globals__)
-        return strategy.wrap(fn.__globals__[fn.__name__])
-
-    return deco
+            return None
