@@ -95,3 +95,29 @@ def test_splitter_in_for():
 
     assert f([1, 2, 3, 4]) == 10
     assert f([1, 2, ImmediateReturn("boom!"), 4]) == "boom!"
+
+
+@continuator
+def mult_result(x, *, continuation):
+    val = continuation.execute(x)
+    return val * x
+
+
+def test_mult_result():
+    @checkpointable
+    def f(x):
+        mult_result(2)
+        return x * x
+
+    assert f(5) == 50
+
+
+def test_mult_result_2():
+    @checkpointable
+    def f(xs):
+        for x in xs:
+            mult_result(x)
+        return 2
+
+    assert f([2, 3, 4]) == 48
+    assert f([2, 3, 4, 5]) == 240
