@@ -76,11 +76,11 @@ class VariableAnalysis(NodeVisitor):
         for arg in node.args.args:
             context.define_argument(arg.arg)
         for arg in node.args.kwonlyargs:
-            context.define(arg.arg)
+            context.define_argument(arg.arg)
         if node.args.vararg:
-            context.define(node.args.vararg.arg)
+            context.define_argument(node.args.vararg.arg)
         if node.args.kwarg:
-            context.define(node.args.kwarg.arg)
+            context.define_argument(node.args.kwarg.arg)
         self(node.body, context)
         return context
 

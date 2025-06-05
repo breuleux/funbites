@@ -256,6 +256,15 @@ class BodySplitter:
                 self.acc = [ast.Return(value=cont)]
 
             else:
+                match x:
+                    case ast.Return(value=v):
+                        x = ast.Return(
+                            value=ast.Call(
+                                func=ast.Name(id="continuation", ctx=ast.Load()),
+                                args=[v],
+                                keywords=[],
+                            )
+                        )
                 self.acc.append(x)
 
         self.acc.reverse()
@@ -268,6 +277,10 @@ def split_body(body, context, prebody=[]):
 
 class Splitter(NodeTransformer):
     def __call__(self, node: ast.FunctionDef, context: SplitState):
+        node.args.kwonlyargs.append(ast.arg(arg="continuation", annotation=None))
+        node.args.kw_defaults.append(ast.Constant(value=None))
+        # We append an explicit return None so that the return transform can apply
+        node.body.append(ast.Return(ast.Constant(value=None)))
         context = SplitState(
             name=context.name,
             variables=VariableAnalysis().inner(node, Variables()),

@@ -121,3 +121,50 @@ def test_mult_result_2():
 
     assert f([2, 3, 4]) == 48
     assert f([2, 3, 4, 5]) == 240
+
+
+@checkpointable
+def ret(x):
+    checkpoint(ImmediateReturn(x))
+
+
+@checkpointable
+def noret(x):
+    checkpoint(x)
+
+
+@checkpointable
+def pos(y):
+    if y < 0:
+        ret(0)
+    else:
+        noret(y)
+    return y
+
+
+def test_nested_splits():
+    assert pos(13) == 13
+    assert pos(-13) == 0
+
+
+@continuator
+def label(continuation):
+    return continuation(continuation)
+
+
+@continuator
+def goto(label, continuation):
+    return label(label)
+
+
+@checkpointable
+def cursed(cell):
+    k = label()
+    cell[0] -= 1
+    if cell[0] > 0:
+        goto(k)
+    return cell[0]
+
+
+def test_cursed():
+    assert cursed([39]) == 0

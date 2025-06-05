@@ -36,4 +36,6 @@ def split(fn, strategy):
 
 
 def checkpointable(fn):
-    return split(fn, MainStrategy())
+    func = split(fn, MainStrategy())
+    func.__is_continuator__ = True
+    return func

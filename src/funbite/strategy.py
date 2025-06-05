@@ -96,9 +96,8 @@ class Strategy:
         raise NotImplementedError()
 
 
-def continuator(fn):
-    fn.__is_continuator__ = True
-    return fn
+def returns(x):
+    return x
 
 
 class MainStrategy(Strategy):
@@ -134,7 +133,10 @@ class MainStrategy(Strategy):
 
     def wrap(self, entry):
         @wraps(entry)
-        def wrapped(*args, **kwargs):
-            return loop(entry, args, kwargs)
+        def wrapped(*args, continuation=None, **kwargs):
+            if continuation is None:
+                return loop(entry, args, {"continuation": returns, **kwargs})
+            else:
+                return entry(*args, **kwargs, continuation=continuation)
 
         return wrapped
