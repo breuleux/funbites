@@ -10,6 +10,8 @@ from ovld import call_next, ovld, recurse
 from .vars import VariableAnalysis, Variables
 from .visit import NodeTransformer, NodeVisitor
 
+ABSENT = object()
+
 
 class SplitTagger(NodeVisitor):
     def reduce(self, node, results, context):
@@ -23,7 +25,9 @@ class SplitTagger(NodeVisitor):
 
     @ovld(priority=1)
     def __call__(self, node: ast.AST, context: object):
-        if context.strategy.is_split(node, context):
+        if isinstance(node, ast.Continue | ast.Break):
+            result = "match"
+        elif context.strategy.is_split(node, context):
             result = "match"
         else:
             result = call_next(node, context)
@@ -140,8 +144,15 @@ class BodySplitter:
     queue: deque = field(default_factory=deque)
     acc: list = field(default_factory=list)
     prebody: list = field(default_factory=list)
+    cont_continue: ast.AST = None
+    cont_break: ast.AST = None
 
     def create_continuation(self, current, context):
+        match current:
+            case ast.Continue():
+                return self.cont_continue
+            case ast.Break():
+                return self.cont_break
         q = [*self.prebody, *self.queue]
         if isinstance(current, ast.Assign):
             name = current.targets[0].id
@@ -175,8 +186,8 @@ class BodySplitter:
 
     @ovld
     def process(self, node: ast.If, context: SplitState):
-        node.body = split_body(node.body, context, prebody=self.queue)
-        node.orelse = split_body(node.orelse, context)
+        node.body = self.subsplit(node.body, context, prebody=self.queue)
+        node.orelse = self.subsplit(node.orelse, context)
         self.acc = [node]
 
     @ovld
@@ -186,8 +197,12 @@ class BodySplitter:
         wcont = self.create_continuation(None, context)
         wret = ast.Return(value=wcont)
         wret.no_transform = True
-        stmt.body = split_body(
-            node.body, context.replace(continuation=wret), prebody=self.queue
+        stmt.body = self.subsplit(
+            node.body,
+            context.replace(continuation=wret),
+            prebody=self.queue,
+            cont_continue=wcont,
+            cont_break=context.continuation.value,
         )
         self.acc = [wret]
 
@@ -271,6 +286,14 @@ class BodySplitter:
 
         self.acc.reverse()
         return self.acc
+
+    def subsplit(self, body, context, prebody=[], cont_continue=ABSENT, cont_break=ABSENT):
+        s = BodySplitter(
+            prebody=prebody,
+            cont_continue=cont_continue if cont_continue is not ABSENT else self.cont_continue,
+            cont_break=cont_break if cont_break is not ABSENT else self.cont_break,
+        )
+        return s.split(body, context)
 
 
 def split_body(body, context, prebody=[]):

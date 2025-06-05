@@ -111,12 +111,14 @@ class MainStrategy(Strategy):
                     return True
         return False
 
-    def transform(self, node: ast.Call, cont, context):
-        return ast.Call(
-            func=ast.Name(id="__FunBite", ctx=ast.Load()),
-            args=[node.func, *node.args],
-            keywords=[*node.keywords, ast.keyword("continuation", cont)],
-        )
+    def transform(self, node, cont, context):
+        match node:
+            case ast.Call(func, args, keywords):
+                return ast.Call(
+                    func=ast.Name(id="__FunBite", ctx=ast.Load()),
+                    args=[func, *args],
+                    keywords=[*keywords, ast.keyword("continuation", cont)],
+                )
 
     def default(self, cont, context):
         return ast.Call(

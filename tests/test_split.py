@@ -97,6 +97,23 @@ def test_splitter_in_for():
     assert f([1, 2, ImmediateReturn("boom!"), 4]) == "boom!"
 
 
+def test_splitter_continue_and_break():
+    @checkpointable
+    def f(n):
+        ret = 0
+        for i in range(n):
+            ret += i
+            checkpoint()
+            if i < 5:
+                continue
+            else:
+                break
+            raise Exception("Should never happen")
+        return ret
+
+    assert f(10) == 15
+
+
 @continuator
 def mult_result(x, *, continuation):
     val = continuation.execute(x)
