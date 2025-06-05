@@ -185,6 +185,7 @@ class BodySplitter:
         self.acc = [stmt]
         wcont = self.create_continuation(None, context)
         wret = ast.Return(value=wcont)
+        wret.no_transform = True
         stmt.body = split_body(
             node.body, context.replace(continuation=wret), prebody=self.queue
         )
@@ -258,13 +259,14 @@ class BodySplitter:
             else:
                 match x:
                     case ast.Return(value=v):
-                        x = ast.Return(
-                            value=ast.Call(
-                                func=ast.Name(id="continuation", ctx=ast.Load()),
-                                args=[v],
-                                keywords=[],
+                        if not getattr(x, "no_transform", False):
+                            x = ast.Return(
+                                value=ast.Call(
+                                    func=ast.Name(id="continuation", ctx=ast.Load()),
+                                    args=[v],
+                                    keywords=[],
+                                )
                             )
-                        )
                 self.acc.append(x)
 
         self.acc.reverse()
