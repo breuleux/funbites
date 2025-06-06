@@ -1,6 +1,6 @@
-from funbite.checkpoint import Checkpointer, checkpoint
-from funbite.interface import checkpointable
-from funbite.strategy import continuator
+from funbites.checkpoint import Checkpointer, checkpoint
+from funbites.interface import checkpointable
+from funbites.strategy import continuator
 
 
 class Stop(Exception):

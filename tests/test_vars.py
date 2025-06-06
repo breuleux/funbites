@@ -2,7 +2,7 @@ import ast
 import inspect
 import textwrap
 
-from funbite.vars import VariableAnalysis, Variables
+from funbites.vars import VariableAnalysis, Variables
 
 
 def test_varanal_local_variables():

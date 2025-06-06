@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
-from funbite.interface import checkpointable
-from funbite.strategy import MainStrategy, continuator
+from funbites.interface import checkpointable
+from funbites.strategy import MainStrategy, continuator
 
 strategy = MainStrategy()
 

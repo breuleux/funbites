@@ -1,5 +1,5 @@
 [project]
-name = "funbite"
+name = "funbites"
 version = "0.1.0"
 description = "Morsel function execution to be resumable"
 readme = "README.md"

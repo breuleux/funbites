@@ -1,7 +1,7 @@
 import ast
 import inspect
 
-from funbite.visit import (
+from funbites.visit import (
     NodeConjunction,
     NodeDisjunction,
     NodeSummation,
