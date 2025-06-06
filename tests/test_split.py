@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from funbites.interface import checkpointable
+from funbites.interface import checkpointable, resumable
 from funbites.strategy import MainStrategy, continuator
 
 strategy = MainStrategy()
@@ -112,6 +112,18 @@ def test_splitter_continue_and_break():
         return ret
 
     assert f(10) == 15
+
+
+def test_splitter_generator():
+    @resumable
+    def squares():
+        i = 0
+        while True:
+            yield i * i
+            i += 1
+
+    for i, x in zip(range(10), squares()):
+        assert i * i == x
 
 
 @continuator

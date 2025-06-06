@@ -1,5 +1,7 @@
+import pickle
+
 from funbites.checkpoint import Checkpointer, checkpoint
-from funbites.interface import checkpointable
+from funbites.interface import checkpointable, resumable
 from funbites.strategy import continuator
 
 
@@ -54,3 +56,24 @@ def test_checkpoint(tmp_path):
             continue
     assert result == sum(range(100))
     assert stop_count == 9
+
+
+@resumable
+def squares():
+    i = 0
+    while True:
+        yield i * i
+        i += 1
+
+
+def test_serialize_generator():
+    sq = squares()
+    assert next(sq) == 0
+    assert next(sq) == 1
+    assert next(sq) == 4
+    ser = pickle.dumps(sq)
+    assert next(sq) == 9
+    assert next(sq) == 16
+    sq = pickle.loads(ser)
+    assert next(sq) == 9
+    assert next(sq) == 16

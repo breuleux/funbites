@@ -1,10 +1,10 @@
 import ast
 import hashlib
-from functools import wraps
+import inspect
 
 from ovld import ovld, recurse
 
-from .runtime import loop
+from .runtime import Loop
 
 
 def continuator(fn):
@@ -109,6 +109,8 @@ class MainStrategy(Strategy):
                 )
                 if getattr(ref, "__is_continuator__", False):
                     return True
+            case ast.Yield():
+                return True
         return False
 
     def transform(self, node, cont, context):
@@ -118,6 +120,12 @@ class MainStrategy(Strategy):
                     func=ast.Name(id="__FunBite", ctx=ast.Load()),
                     args=[func, *args],
                     keywords=[*keywords, ast.keyword("continuation", cont)],
+                )
+            case ast.Yield(value):
+                return ast.Call(
+                    func=ast.Name(id="__FunBiteYield", ctx=ast.Load()),
+                    args=[value],
+                    keywords=[ast.keyword("continuation", cont)],
                 )
 
     def default(self, cont, context):
@@ -133,12 +141,34 @@ class MainStrategy(Strategy):
         ).hexdigest()
         return f"{context.name}__{hsh}"
 
-    def wrap(self, entry):
-        @wraps(entry)
-        def wrapped(*args, continuation=None, **kwargs):
-            if continuation is None:
-                return loop(entry, args, {"continuation": returns, **kwargs})
-            else:
-                return entry(*args, **kwargs, continuation=continuation)
+    def wrap(self, entry, original):
+        is_generator = inspect.isgeneratorfunction(original)
+        is_async = inspect.iscoroutinefunction(original)
+        return Fun(entry, is_generator=is_generator, is_async=is_async)
 
-        return wrapped
+
+class Fun:
+    def __init__(self, entry, is_generator=False, is_async=False):
+        self.entry = entry
+        self.is_generator = is_generator
+        self.is_async = is_async
+
+    def __call__(self, *args, continuation=None, **kwargs):
+        if continuation is not None:
+            assert not self.is_generator
+            assert not self.is_async
+            return self.entry(*args, **kwargs, continuation=continuation)
+
+        loop = Loop(
+            self.entry,
+            args,
+            {"continuation": returns, **kwargs},
+            is_generator=self.is_generator,
+        )
+
+        if self.is_generator:
+            return loop
+        elif self.is_async:
+            raise NotImplementedError()
+        else:
+            return loop.run()
