@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import pytest
+
 from funbites.interface import checkpointable, resumable
 from funbites.strategy import MainStrategy, continuator
 
@@ -112,6 +114,61 @@ def test_splitter_continue_and_break():
         return ret
 
     assert f(10) == 15
+
+
+_feedback = {}
+
+
+def test_splitter_exceptions():
+    @checkpointable
+    def f(n, d):
+        try:
+            if n > 0:
+                checkpoint()
+                n = n / d
+            return n
+        except ZeroDivisionError:
+            return -1
+        finally:
+            _feedback["finally"] = True
+
+    _feedback.clear()
+    assert f(14, 7) == 2
+    assert _feedback["finally"]
+
+    _feedback.clear()
+    assert f(3, 0) == -1
+    assert _feedback["finally"]
+
+    _feedback.clear()
+    assert f(-9, 0) == -9
+    assert _feedback["finally"]
+
+    _feedback.clear()
+    with pytest.raises(TypeError):
+        f(3, "wow")
+    assert _feedback["finally"]
+
+
+def test_splitter_nested_exceptions():
+    with pytest.raises(Exception, match="not allowed to nest try/except"):
+
+        @checkpointable
+        def f(n, d):
+            try:
+                try:
+                    if n > 0:
+                        checkpoint()
+                        n = n / d
+                    return n
+                except ZeroDivisionError:
+                    return -1
+                finally:
+                    _feedback["inner"] = True
+            except TypeError:
+                return -2
+            finally:
+                _feedback["outer"] = True
 
 
 def test_splitter_generator():

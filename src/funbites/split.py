@@ -1,6 +1,7 @@
 import ast
 import dataclasses
 from collections import deque
+from copy import deepcopy
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Callable
@@ -76,6 +77,9 @@ class Collapse(NodeVisitor):
         return self.collapse(node, hoist, context)
 
     def __call__(self, node: ast.While, context):
+        return self.collapse(node, hoist=[], context=context)
+
+    def __call__(self, node: ast.Try, context):
         return self.collapse(node, hoist=[], context=context)
 
     def __call__(self, node: ast.Compare, context):
@@ -160,9 +164,9 @@ class BodySplitter:
         upper_vars = VariableAnalysis.run(
             q, context=Variables(arg_defs=context.variables.arg_defs)
         )
-        self.acc.reverse()
+        body = list(reversed(self.acc))
         acc_vars = VariableAnalysis.run(
-            self.acc, context=upper_vars.clone().replace(uses_local=set())
+            body, context=upper_vars.clone().replace(uses_local=set())
         )
         new_defs = acc_vars.local_defs - upper_vars.local_defs
         to_pass = list(acc_vars.uses_local - new_defs)
@@ -170,8 +174,13 @@ class BodySplitter:
         args = [ast.Name(id=var, ctx=ast.Load()) for var in to_pass]
         to_pass.append(name)
 
-        cont_name = context.strategy.identify(name, q, self.acc, context)
-        cont_name = _encapsulate(to_pass, self.acc, context, cont_name=cont_name)
+        if try_model := self.continuations.get("try", None):
+            try_model = deepcopy(try_model)
+            try_model.body = body
+            body = [try_model]
+
+        cont_name = context.strategy.identify(name, q, body, context)
+        cont_name = _encapsulate(to_pass, body, context, cont_name=cont_name)
 
         cont_struct = ast.Call(
             func=ast.Name(id="__FunBite", ctx=ast.Load()),
@@ -207,6 +216,36 @@ class BodySplitter:
             },
         )
         self.acc = [wret]
+
+    @ovld
+    def process(self, node: ast.Try, context: SplitState):
+        if "try" in self.continuations:
+            raise Exception(
+                "It is not allowed to nest try/except statements in checkpointable functions"
+            )
+
+        try_model = deepcopy(node)
+        try_model.body = []
+
+        for handler in try_model.handlers:
+            cont = self.subcont(handler.body, context)
+            handler.body = [ast.Return(value=cont)]
+
+        if try_model.orelse:
+            cont = self.subcont(try_model.orelse, context)
+            try_model.orelse = [ast.Return(value=cont)]
+
+        # We do not modify finalbody because we generate return statements,
+        # which would interfere with return statements in the body or exception
+        # handlers.
+
+        cont = self.subcont(node.body, context, continuations={"try": try_model})
+        ret = ast.Return(value=cont)
+        self.acc = [ret]
+
+    @ovld
+    def process(self, node: ast.With, context: SplitState):
+        raise NotImplementedError()
 
     @ovld
     def process(self, node: ast.For, context: SplitState):
@@ -286,8 +325,7 @@ class BodySplitter:
                             )
                 self.acc.append(x)
 
-        self.acc.reverse()
-        return self.acc
+        return list(reversed(self.acc))
 
     def subsplit(self, body, context, prebody=[], continuations={}):
         s = BodySplitter(
@@ -295,6 +333,14 @@ class BodySplitter:
             continuations={**self.continuations, **continuations},
         )
         return s.split(body, context)
+
+    def subcont(self, body, context, prebody=[], continuations={}):
+        s = BodySplitter(
+            prebody=prebody,
+            continuations={**self.continuations, **continuations},
+        )
+        s.split(body, context)
+        return s.create_continuation(None, context)
 
 
 def split_body(body, context, prebody=[]):
