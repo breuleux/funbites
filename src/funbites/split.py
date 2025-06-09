@@ -144,15 +144,14 @@ class BodySplitter:
     queue: deque = field(default_factory=deque)
     acc: list = field(default_factory=list)
     prebody: list = field(default_factory=list)
-    cont_continue: ast.AST = None
-    cont_break: ast.AST = None
+    continuations: dict[str, ast.AST] = field(default_factory=dict)
 
     def create_continuation(self, current, context):
         match current:
             case ast.Continue():
-                return self.cont_continue
+                return self.continuations["continue"]
             case ast.Break():
-                return self.cont_break
+                return self.continuations["break"]
         q = [*self.prebody, *self.queue]
         if isinstance(current, ast.Assign):
             name = current.targets[0].id
@@ -187,7 +186,7 @@ class BodySplitter:
     @ovld
     def process(self, node: ast.If, context: SplitState):
         node.body = self.subsplit(node.body, context, prebody=self.queue)
-        node.orelse = self.subsplit(node.orelse, context)
+        node.orelse = self.subsplit(node.orelse, context, prebody=self.queue)
         self.acc = [node]
 
     @ovld
@@ -201,8 +200,11 @@ class BodySplitter:
             node.body,
             context.replace(continuation=wret),
             prebody=self.queue,
-            cont_continue=wcont,
-            cont_break=context.continuation.value,
+            continuations={
+                **self.continuations,
+                "continue": wcont,
+                "break": context.continuation.value,
+            },
         )
         self.acc = [wret]
 
@@ -287,11 +289,10 @@ class BodySplitter:
         self.acc.reverse()
         return self.acc
 
-    def subsplit(self, body, context, prebody=[], cont_continue=ABSENT, cont_break=ABSENT):
+    def subsplit(self, body, context, prebody=[], continuations={}):
         s = BodySplitter(
             prebody=prebody,
-            cont_continue=cont_continue if cont_continue is not ABSENT else self.cont_continue,
-            cont_break=cont_break if cont_break is not ABSENT else self.cont_break,
+            continuations={**self.continuations, **continuations},
         )
         return s.split(body, context)
 
