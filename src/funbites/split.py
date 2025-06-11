@@ -318,7 +318,7 @@ class BodySplitter:
                         if not getattr(x, "no_transform", False):
                             x = ast.Return(
                                 value=ast.Call(
-                                    func=ast.Name(id="continuation", ctx=ast.Load()),
+                                    func=self.continuations["return"],
                                     args=[v],
                                     keywords=[],
                                 )
@@ -343,10 +343,6 @@ class BodySplitter:
         return s.create_continuation(None, context)
 
 
-def split_body(body, context, prebody=[]):
-    return BodySplitter(prebody=prebody).split(body, context)
-
-
 class Splitter(NodeTransformer):
     def __call__(self, node: ast.FunctionDef, context: SplitState):
         node.args.kwonlyargs.append(ast.arg(arg="continuation", annotation=None))
@@ -360,7 +356,8 @@ class Splitter(NodeTransformer):
             globals=context.globals,
             locals=context.locals,
         )
-        new_body = split_body(node.body, context)
+        conts = {"return": ast.Name(id="continuation", ctx=ast.Load())}
+        new_body = BodySplitter(prebody=[], continuations=conts).split(node.body, context)
         defns = context.definitions.values()
         if defns:
             _encapsulate(node.args, new_body, context, cont_name=node.name)
