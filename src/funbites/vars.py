@@ -117,5 +117,9 @@ class VariableAnalysis(NodeVisitor):
                 context.use(var)
         return context
 
+    def __call__(self, node: ast.excepthandler, context: Variables):
+        context.define(node.name)
+        return context
+
     def reduce(self, node, results, context):
         return context
