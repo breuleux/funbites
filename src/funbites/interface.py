@@ -4,7 +4,7 @@ import textwrap
 import warnings
 
 from .runtime import FunBite, FunBiteYield
-from .split import SplitState, SplitTagger, Splitter
+from .split import SplitState, Splitter
 from .strategy import MainStrategy
 
 
@@ -19,7 +19,6 @@ def split(fn, strategy):
         globals=fn.__globals__,
         locals=locs,
     )
-    SplitTagger.run(fdef, context=context)
     fdef = Splitter.run(fdef, context=context)
     if fdef is None:
         warnings.warn(f"No split points found in function {fn.__name__}")

@@ -6,105 +6,13 @@ from dataclasses import dataclass, field
 from itertools import count
 from typing import Callable
 
-from ovld import call_next, ovld, recurse
+from ovld import ovld
 
+from .simplify import Simplify, TagIgnores
 from .vars import VariableAnalysis, Variables
-from .visit import NodeTransformer, NodeVisitor
+from .visit import NodeTransformer
 
 ABSENT = object()
-
-
-class SplitTagger(NodeVisitor):
-    def reduce(self, node, results, context):
-        for _, x in results:
-            match x:
-                case "match":
-                    return "inner"
-                case "inner":
-                    return "inner"
-        return "normal"
-
-    @ovld(priority=1)
-    def __call__(self, node: ast.AST, context: object):
-        if isinstance(node, ast.Continue | ast.Break):
-            result = "match"
-        elif context.strategy.is_split(node, context):
-            result = "match"
-        else:
-            result = call_next(node, context)
-        node.split_tag = result
-        return result
-
-    def __call__(self, node: ast.Expr, context: object):
-        return recurse(node.value, context)
-
-    def __call__(self, node: object, context: object):
-        return "normal"
-
-
-class Collapse(NodeVisitor):
-    def collapse(self, node, hoist, context):
-        stmts = []
-        for fld in hoist:
-            value = getattr(node, fld)
-            new_stmts, new_value = self(value, context)
-            assert value is None or new_value is not None
-            stmts.extend(new_stmts)
-            setattr(node, fld, new_value)
-
-        if isinstance(node, ast.stmt):
-            rval = None
-            add = node
-            SplitTagger.run(add, context=context)
-        else:
-            newsym = context.gensym()
-            rval = ast.Name(id=newsym, ctx=ast.Load())
-            add = ast.Assign(
-                targets=[ast.Name(id=newsym, ctx=ast.Store())],
-                value=node,
-            )
-            if getattr(node, "split_tag", None) == "match":
-                add.split_tag = "match"
-
-        add.collapsed = True
-        stmts.append(add)
-        return stmts, rval
-
-    def __call__(self, node: ast.AST, context):
-        usually_keep = {"body", "orelse", "cases"}
-        all_fields = [f for f, _ in ast.iter_fields(node)]
-        hoist = [f for f in all_fields if f not in usually_keep]
-        return self.collapse(node, hoist, context)
-
-    def __call__(self, node: ast.While, context):
-        return self.collapse(node, hoist=[], context=context)
-
-    def __call__(self, node: ast.Try, context):
-        return self.collapse(node, hoist=[], context=context)
-
-    def __call__(self, node: ast.Compare, context):
-        return self.collapse(node, hoist={"comparators"}, context=context)
-
-    def __call__(self, node: list, context):
-        stmts = []
-        rval = []
-        for x in node:
-            new_stmts, x = self(x, context)
-            rval.append(x)
-            stmts.extend(new_stmts)
-        return stmts, rval
-
-    def __call__(self, node: ast.Name, context):
-        return [], node
-
-    def __call__(self, node: ast.Constant, context):
-        return [], node
-
-    def __call__(self, node: ast.operator, context):
-        return [], node
-
-    def __call__(self, node: object, context):
-        return [], node
 
 
 @dataclass(kw_only=True)
@@ -218,36 +126,6 @@ class BodySplitter:
         self.acc = [wret]
 
     @ovld
-    def process(self, node: ast.Try, context: SplitState):
-        if "try" in self.continuations:
-            raise Exception(
-                "It is not allowed to nest try/except statements in checkpointable functions"
-            )
-
-        try_model = deepcopy(node)
-        try_model.body = []
-
-        for handler in try_model.handlers:
-            cont = self.subcont(handler.body, context)
-            handler.body = [ast.Return(value=cont)]
-
-        if try_model.orelse:
-            cont = self.subcont(try_model.orelse, context)
-            try_model.orelse = [ast.Return(value=cont)]
-
-        # We do not modify finalbody because we generate return statements,
-        # which would interfere with return statements in the body or exception
-        # handlers.
-
-        cont = self.subcont(node.body, context, continuations={"try": try_model})
-        ret = ast.Return(value=cont)
-        self.acc = [ret]
-
-    @ovld
-    def process(self, node: ast.With, context: SplitState):
-        raise NotImplementedError()
-
-    @ovld
     def process(self, node: ast.For, context: SplitState):
         make_iter = ast.Assign(
             targets=[ast.Name(id=node.target.id + "_iter", ctx=ast.Store())],
@@ -294,23 +172,26 @@ class BodySplitter:
         self.queue = deque(body)
         while self.queue:
             x = self.queue.pop()
-            split_tag = getattr(x, "split_tag", "normal")
-            collapsed = getattr(x, "collapsed", False)
+            if not getattr(x, "ignore", True):
+                match x:
+                    case ast.Expr(value=focus):
+                        pass
+                    case ast.Assign(value=focus):
+                        pass
+                    case ast.Return(value=focus):
+                        pass
+                    case _:
+                        focus = x
 
-            if split_tag == "inner" and collapsed:
-                cont = self.create_continuation(None, context)
-                ret = ast.Return(value=cont)
-                ctx = context.replace(continuation=ret)
-                self.process(x, ctx)
+                if context.strategy.is_split(focus, context):
+                    cont = self.create_continuation(x, context)
+                    self.acc = [ast.Return(value=cont)]
 
-            elif split_tag == "inner":
-                stmts, expr = Collapse.run(x, context=context)
-                assert expr is None
-                self.queue.extend(stmts)
-
-            elif split_tag == "match":
-                cont = self.create_continuation(x, context)
-                self.acc = [ast.Return(value=cont)]
+                else:
+                    cont = self.create_continuation(None, context)
+                    ret = ast.Return(value=cont)
+                    ctx = context.replace(continuation=ret)
+                    self.process(x, ctx)
 
             else:
                 match x:
@@ -345,6 +226,10 @@ class BodySplitter:
 
 class Splitter(NodeTransformer):
     def __call__(self, node: ast.FunctionDef, context: SplitState):
+        TagIgnores.run(node, context=context)
+        Simplify.run(node, context=context)
+        TagIgnores.run(node, context=context)
+
         node.args.kwonlyargs.append(ast.arg(arg="continuation", annotation=None))
         node.args.kw_defaults.append(ast.Constant(value=None))
         # We append an explicit return None so that the return transform can apply

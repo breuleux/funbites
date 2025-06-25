@@ -109,6 +109,10 @@ class MainStrategy(Strategy):
                 )
                 if getattr(ref, "__is_continuator__", False):
                     return True
+            case ast.Continue():
+                return True
+            case ast.Break():
+                return True
             case ast.Yield():
                 return True
         return False
