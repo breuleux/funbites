@@ -50,8 +50,6 @@ class Simplify(NodeVisitor):
                 targets=[ast.Name(id=newsym, ctx=ast.Store())],
                 value=node,
             )
-            # add.ignore = node.ignore
-        # add.collapsed = True
         stmts.append(add)
         return stmts, rval
 
@@ -81,6 +79,126 @@ class Simplify(NodeVisitor):
     def __call__(self, node: ast.While, context):
         return self.collapse(node, hoist=[], recurse=["body", "orelse"], context=context)
 
+    def __call__(self, node: ast.For, context):
+        make_iter = ast.Assign(
+            targets=[ast.Name(id=node.target.id + "_iter", ctx=ast.Store())],
+            value=ast.Call(
+                func=ast.Name(id="iter", ctx=ast.Load()),
+                args=[node.iter],
+                keywords=[],
+            ),
+        )
+        nextvar = context.gensym()
+        getnext = ast.NamedExpr(
+            target=ast.Name(id=nextvar, ctx=ast.Store()),
+            value=ast.Call(
+                func=ast.Name(id="next", ctx=ast.Load()),
+                args=[
+                    ast.Name(id=node.target.id + "_iter", ctx=ast.Load()),
+                    ast.Name(id="StopIteration", ctx=ast.Load()),
+                ],
+                keywords=[],
+            ),
+        )
+        extractor = ast.Assign(
+            targets=[node.target],
+            value=ast.Name(id=nextvar, ctx=ast.Load()),
+        )
+        loop = ast.While(
+            test=ast.Compare(
+                left=getnext,
+                ops=[ast.IsNot()],
+                comparators=[ast.Name(id="StopIteration", ctx=ast.Load())],
+            ),
+            body=[
+                extractor,
+                *node.body,
+            ],
+        )
+        TagIgnores.run(make_iter, context=context)
+        TagIgnores.run(loop, context=context)
+        stmts, expr = self([make_iter, loop], context)
+        assert not any(expr)
+        return stmts, None
+
+    def __call__(self, node: ast.With, context):
+        ovar = node.items[0].optional_vars
+        cmid = (ovar and ovar.id) or context.gensym()
+
+        cm = ast.Assign(
+            targets=[ast.Name(id=cmid, ctx=ast.Store())],
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=node.items[0].context_expr,
+                    attr="__enter__",
+                    ctx=ast.Load(),
+                ),
+                args=[],
+                keywords=[],
+            ),
+        )
+
+        excsym = context.gensym()
+
+        new_stmt = ast.Try(
+            body=node.body,
+            handlers=[
+                ast.ExceptHandler(
+                    type=ast.Name(id="BaseException", ctx=ast.Load()),
+                    name=excsym,
+                    body=[
+                        ast.Expr(
+                            value=ast.Call(
+                                func=ast.Attribute(
+                                    value=ast.Name(id=cmid, ctx=ast.Load()),
+                                    attr="__exit__",
+                                    ctx=ast.Load(),
+                                ),
+                                args=[
+                                    ast.Call(
+                                        func=ast.Name(id="type", ctx=ast.Load()),
+                                        args=[ast.Name(id=excsym, ctx=ast.Load())],
+                                        keywords=[],
+                                    ),
+                                    ast.Name(id=excsym, ctx=ast.Load()),
+                                    ast.Attribute(
+                                        value=ast.Name(id=excsym, ctx=ast.Load()),
+                                        attr="__traceback__",
+                                        ctx=ast.Load(),
+                                    ),
+                                ],
+                                keywords=[],
+                            ),
+                        ),
+                        ast.Raise(ast.Name(id=excsym, ctx=ast.Load())),
+                    ],
+                )
+            ],
+            orelse=[
+                ast.Expr(
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id=cmid, ctx=ast.Load()),
+                            attr="__exit__",
+                            ctx=ast.Load(),
+                        ),
+                        args=[
+                            ast.Constant(value=None),
+                            ast.Constant(value=None),
+                            ast.Constant(value=None),
+                        ],
+                        keywords=[],
+                    )
+                )
+            ],
+            finalbody=[],
+        )
+        TagIgnores.run(cm, context)
+        TagIgnores.run(new_stmt, context)
+        stmts, expr = self([cm, new_stmt], context)
+        assert not any(expr)
+        return stmts, None
+
     def __call__(self, node: ast.Try, context):
         return self.collapse(
             node,
@@ -88,9 +206,6 @@ class Simplify(NodeVisitor):
             recurse=["body", "handlers", "orelse", "finalbody"],
             context=context,
         )
-
-    # def __call__(self, node: ast.With, context):
-    #     return self.collapse(node, hoist=[], context=context)
 
     def __call__(self, node: ast.Compare, context):
         return self.collapse(node, hoist={"comparators"}, recurse=[], context=context)

@@ -125,46 +125,6 @@ class BodySplitter:
         )
         self.acc = [wret]
 
-    @ovld
-    def process(self, node: ast.For, context: SplitState):
-        make_iter = ast.Assign(
-            targets=[ast.Name(id=node.target.id + "_iter", ctx=ast.Store())],
-            value=ast.Call(
-                func=ast.Name(id="iter", ctx=ast.Load()),
-                args=[node.iter],
-                keywords=[],
-            ),
-        )
-        nextvar = context.gensym()
-        getnext = ast.NamedExpr(
-            target=ast.Name(id=nextvar, ctx=ast.Store()),
-            value=ast.Call(
-                func=ast.Name(id="next", ctx=ast.Load()),
-                args=[
-                    ast.Name(id=node.target.id + "_iter", ctx=ast.Load()),
-                    ast.Name(id="StopIteration", ctx=ast.Load()),
-                ],
-                keywords=[],
-            ),
-        )
-        extractor = ast.Assign(
-            targets=[node.target],
-            value=ast.Name(id=nextvar, ctx=ast.Load()),
-        )
-        loop = ast.While(
-            test=ast.Compare(
-                left=getnext,
-                ops=[ast.IsNot()],
-                comparators=[ast.Name(id="StopIteration", ctx=ast.Load())],
-            ),
-            body=[
-                extractor,
-                *node.body,
-            ],
-        )
-        self.queue.append(make_iter)
-        self.process(loop, context)
-
     def split(self, body, context):
         if context.continuation:
             body = [*body, context.continuation]
