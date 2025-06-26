@@ -1,0 +1,7 @@
+@simptest
+def test_expr_operators():
+    __0 = one()
+    __1 = checkpoint()
+    __2 = __0 + __1
+    __3 = __2 + three()
+    return __3

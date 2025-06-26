@@ -8,7 +8,7 @@ from typing import Callable
 
 from ovld import ovld
 
-from .simplify import Simplify, TagIgnores
+from .simplify import simplify
 from .vars import VariableAnalysis, Variables
 from .visit import NodeTransformer
 
@@ -186,14 +186,11 @@ class BodySplitter:
 
 class Splitter(NodeTransformer):
     def __call__(self, node: ast.FunctionDef, context: SplitState):
-        TagIgnores.run(node, context=context)
-        Simplify.run(node, context=context)
-        TagIgnores.run(node, context=context)
+        node = simplify(node, context=context)
 
         node.args.kwonlyargs.append(ast.arg(arg="continuation", annotation=None))
         node.args.kw_defaults.append(ast.Constant(value=None))
-        # We append an explicit return None so that the return transform can apply
-        node.body.append(ast.Return(ast.Constant(value=None)))
+
         context = SplitState(
             name=context.name,
             variables=VariableAnalysis().inner(node, Variables()),

@@ -40,7 +40,7 @@ class Simplify(NodeVisitor):
             assert not any(rval)
             setattr(node, fld, substmts)
 
-        if isinstance(node, ast.stmt):
+        if isinstance(node, (ast.stmt, ast.excepthandler)):
             rval = None
             add = node
         else:
@@ -53,19 +53,27 @@ class Simplify(NodeVisitor):
         stmts.append(add)
         return stmts, rval
 
+    def unignore_in_sequence(self, node_seq):
+        for n in node_seq:
+            if isinstance(n, ast.stmt):
+                break
+            elif n.ignore:
+                n.hoist = True
+            else:
+                break
+
     @ovld(priority=1)
     def __call__(self, node: ast.stmt, context):
-        if node.ignore:
+        if node.ignore and not getattr(node, "hoist", False):
             return [node], None
         else:
             return call_next(node, context)
 
     @ovld(priority=1)
     def __call__(self, node: ast.expr, context):
-        if node.ignore:
+        if node.ignore and not getattr(node, "hoist", False):
             return [], node
         else:
-            print(ast.unparse(node))
             return call_next(node, context)
 
     def __call__(self, node: ast.AST, context):
@@ -193,8 +201,8 @@ class Simplify(NodeVisitor):
             ],
             finalbody=[],
         )
-        TagIgnores.run(cm, context)
-        TagIgnores.run(new_stmt, context)
+        TagIgnores.run(cm, context=context)
+        TagIgnores.run(new_stmt, context=context)
         stmts, expr = self([cm, new_stmt], context)
         assert not any(expr)
         return stmts, None
@@ -207,13 +215,19 @@ class Simplify(NodeVisitor):
             context=context,
         )
 
+    def __call__(self, node: ast.BinOp, context):
+        self.unignore_in_sequence([node.left, node.right])
+        return call_next(node, context)
+
     def __call__(self, node: ast.Compare, context):
-        return self.collapse(node, hoist={"comparators"}, recurse=[], context=context)
+        self.unignore_in_sequence([node.left, *node.comparators])
+        return self.collapse(node, hoist=["left", "comparators"], recurse=[], context=context)
 
     def __call__(self, node: ast.FunctionDef, context):
         return self.collapse(node, hoist=[], recurse=["body"], context=context)
 
     def __call__(self, node: list, context):
+        self.unignore_in_sequence(node)
         stmts = []
         rval = []
         for x in node:
@@ -233,3 +247,40 @@ class Simplify(NodeVisitor):
 
     def __call__(self, node: object, context):
         return [], node
+
+
+class GuaranteeReturn(NodeVisitor):
+    def __call__(self, node: object, context):
+        return False
+
+    def __call__(self, node: ast.Return, context):
+        return True
+
+    def __call__(self, node: ast.Raise, context):
+        return True
+
+    def __call__(self, node: ast.If, context):
+        self.add_to_stmt_list(node.body, context)
+        self.add_to_stmt_list(node.orelse, context)
+        return True
+
+    def __call__(self, node: ast.FunctionDef, context):
+        self.add_to_stmt_list(node.body, context)
+        return True
+
+    def add_to_stmt_list(self, stmts: list, context):
+        if not stmts:  # pragma: no cover
+            return stmts
+        last = stmts[-1]
+        add = not self(last, context)
+        if add:
+            stmts.append(ast.Return(value=ast.Constant(None)))
+        return True
+
+
+def simplify(tree, context):
+    TagIgnores.run(tree, context=context)
+    Simplify.run(tree, context=context)
+    GuaranteeReturn.run(tree, context=context)
+    TagIgnores.run(tree, context=context)
+    return tree

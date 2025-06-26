@@ -1,0 +1,13 @@
+@simptest
+def test_with_transform():
+    filou = open('flafla', 'r').__enter__()
+    try:
+        __1 = checkpoint()
+        __1
+        filou.write('wow!\n')
+    except BaseException as __0:
+        filou.__exit__(type(__0), __0, __0.__traceback__)
+        raise __0
+    else:
+        filou.__exit__(None, None, None)
+    return True

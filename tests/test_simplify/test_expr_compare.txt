@@ -1,0 +1,6 @@
+@simptest
+def test_expr_compare():
+    __0 = one()
+    __1 = checkpoint()
+    __2 = __0 < __1 < three()
+    return __2

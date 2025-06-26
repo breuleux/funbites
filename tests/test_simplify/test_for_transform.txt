@@ -1,0 +1,10 @@
+@simptest
+def test_for_transform():
+    rval = 0
+    i_iter = iter(range(10))
+    while (__0 := next(i_iter, StopIteration)) is not StopIteration:
+        i = __0
+        __1 = checkpoint()
+        __1
+        rval += i
+    return rval

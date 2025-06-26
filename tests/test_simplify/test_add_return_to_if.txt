@@ -1,0 +1,7 @@
+@simptest
+def test_add_return_to_if(x):
+    if x > 0:
+        print('hello')
+        return None
+    else:
+        return True

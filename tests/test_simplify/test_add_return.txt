@@ -1,0 +1,4 @@
+@simptest
+def test_add_return():
+    print('hello')
+    return None

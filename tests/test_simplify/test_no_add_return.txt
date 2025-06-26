@@ -1,0 +1,6 @@
+@simptest
+def test_no_add_return(x):
+    if x > 0:
+        raise Exception('oh no')
+    else:
+        return True
